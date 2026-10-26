@@ -1,0 +1,23 @@
+{
+  "name": "agent-factory",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "concurrently -n server,web -c yellow,cyan \"pnpm --filter @af/server dev\" \"pnpm --filter @af/web dev\"",
+    "build": "pnpm --filter @af/web build",
+    "start": "pnpm --filter @af/server start",
+    "typecheck": "pnpm -r typecheck"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "node-pty",
+      "esbuild"
+    ]
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.5",
+    "concurrently": "^10.0.6",
+    "typescript": "^7.0.2"
+  }
+}
