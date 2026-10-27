@@ -8,6 +8,9 @@ import type { ChatMessage, LLM, ToolCall } from '../llm/types.js';
 import { classifyRisk, getTool, toolsForRole, type ToolContext, type ToolResult } from '../tools/index.js';
 import { emitEditor, emitThought } from '../tools/screens.js';
 import * as wf from '../workflow.js';
+import { life } from '../life.js';
+import { usage } from '../usage.js';
+import { settings } from '../settings.js';
 import { buildSystemPrompt, taskBriefing } from './prompts.js';
 
 type Outcome = 'done' | 'preempted' | 'stopped' | 'error';
@@ -19,7 +22,13 @@ export class AgentRunner {
   busy = false;
   /** P0 抢占请求：在下一步边界保存进度并让出 */
   interrupt = false;
+  /** 因哪个 P0 任务被要求让出 */
+  preemptFor: string | null = null;
+  /** 最近一次变空闲的时间（茶水间等空闲行为用） */
+  idleSince = Date.now();
   private injected: string[] = [];
+  /** 被叫去开会/谈话：在下一步边界停下，等放行后再继续 */
+  private holdReq: { arrive: () => void; released: Promise<void> } | null = null;
 
   constructor(readonly def: AgentDef, private llm: LLM) {
     this.role = company.role(def.roleId);
@@ -43,20 +52,47 @@ export class AgentRunner {
     this.set({ screen, activity, status: 'working' });
   };
 
-  /** 老板插话：忙时插入当前对话，空闲时作为一个新事项 */
-  inject(text: string) {
+  /** 插话：忙时插入当前对话；空闲时老板的话作为一个新事项，经理的留言只记录 */
+  inject(text: string, from: 'boss' | 'manager' = 'boss') {
     if (this.busy) {
-      this.injected.push(text);
-      bus.log('info', `老板对 ${this.def.name} 说：${text}`, this.id);
-    } else {
+      this.injected.push(from === 'boss' ? `【老板插话】${text}` : text);
+      if (from === 'boss') bus.log('info', `老板对 ${this.def.name} 说：${text}`, this.id);
+    } else if (from === 'boss') {
       wf.enqueueJob({ agentId: this.id, priority: 'P1', taskId: null, title: `老板指示 ${Date.now()}`, prompt: `老板直接给你的指示：\n${text}` });
       bus.log('info', `老板给 ${this.def.name} 下达指示：${text}`, this.id);
     }
   }
 
-  private async waitWhilePaused() {
-    while (this.state.paused || store.globalPaused) {
-      if (this.state.status !== 'paused') this.set({ status: 'paused', activity: '已暂停' });
+  /** 请求在下一步边界停下（开会/谈话）。arrived：已停下；release：放行继续 */
+  requestHold() {
+    let arrive!: () => void;
+    let release!: () => void;
+    const arrived = new Promise<void>((r) => (arrive = r));
+    const released = new Promise<void>((r) => (release = r));
+    this.holdReq = { arrive, released };
+    return {
+      arrived,
+      release: () => {
+        if (this.holdReq?.arrive === arrive) this.holdReq = null;
+        release();
+      },
+    };
+  }
+
+  private async honorHold() {
+    const h = this.holdReq;
+    if (!h) return;
+    this.holdReq = null;
+    const prev = { status: this.state.status, activity: this.state.activity };
+    h.arrive();
+    await h.released;
+    this.set(prev);
+  }
+
+  private async waitWhilePaused(taskId: string | null) {
+    while (this.state.paused || store.globalPaused || usage.isGoalHeld(taskId)) {
+      const activity = usage.isGoalHeld(taskId) && !this.state.paused && !store.globalPaused ? '目标超预算，等老板决定' : '已暂停';
+      if (this.state.status !== 'paused' || this.state.activity !== activity) this.set({ status: 'paused', activity });
       await new Promise((r) => setTimeout(r, 500));
     }
   }
@@ -64,10 +100,12 @@ export class AgentRunner {
   // ---------------- 员工执行任务 ----------------
   async runTask(task: Task) {
     this.busy = true;
+    // 必须同步认领：调度器是同步遍历员工的，若先 await 再改状态，同角色的另一个员工会领到同一个任务
     const resumed = store.conversations.get(task.id);
     const wasRework = task.status === 'changes_requested';
     store.updateTask(task.id, { status: 'in_progress', assigneeAgentId: this.id });
     this.set({ currentTaskId: task.id, status: 'thinking', activity: `开始 ${task.id}` });
+    await life.ensureAtDesk(this.id);
 
     let messages: ChatMessage[];
     if (resumed?.length) {
@@ -102,6 +140,7 @@ export class AgentRunner {
   // ---------------- 处理事项（经理的规划/评审/审批，或老板指示） ----------------
   async runJob(job: wf.Job) {
     this.busy = true;
+    await life.ensureAtDesk(this.id);
     this.set({ currentTaskId: job.taskId, status: 'thinking', activity: job.title });
     bus.log('info', `开始处理：${job.title}`, this.id, job.taskId);
     const messages: ChatMessage[] = [
@@ -115,7 +154,9 @@ export class AgentRunner {
   private finish() {
     this.busy = false;
     this.interrupt = false;
+    this.preemptFor = null;
     this.injected = [];
+    this.idleSince = Date.now();
     this.set({ status: 'idle', screen: 'idle', currentTaskId: null, activity: '空闲' });
     store.onChangeNotify();
   }
@@ -124,10 +165,14 @@ export class AgentRunner {
     const tools = toolsForRole(this.role.tools);
     const ctx: ToolContext = { agentId: this.id, agentName: this.def.name, taskId, setScreen: this.setScreen };
     let nudged = false;
+    let fileEdits = 0;
+    const isLightRole = !this.isManager && !this.role.tools.includes('terminal');
+    const maxSteps = this.role.maxSteps ?? (this.isManager ? Math.min(10, config.llm.maxSteps) : isLightRole ? Math.min(8, config.llm.maxSteps) : config.llm.maxSteps);
     const save = () => convKey && store.saveConversation(convKey, messages);
 
-    for (let step = 0; step < config.llm.maxSteps; step++) {
-      await this.waitWhilePaused();
+    for (let step = 0; step < maxSteps; step++) {
+      await this.waitWhilePaused(taskId);
+      await this.honorHold();
       if (this.interrupt) {
         save();
         return 'preempted';
@@ -136,7 +181,7 @@ export class AgentRunner {
         bus.log('warn', `任务 ${taskId} 已取消，停止工作`, this.id, taskId);
         return 'stopped';
       }
-      while (this.injected.length) messages.push({ role: 'user', content: `【老板插话】${this.injected.shift()}` });
+      while (this.injected.length) messages.push({ role: 'user', content: this.injected.shift()! });
 
       // ---- 调用模型（流式：思考过程和正在写的代码实时上屏） ----
       this.set({ status: 'thinking', screen: 'thinking', activity: '思考中…' });
@@ -181,6 +226,7 @@ export class AgentRunner {
 
       const tk = this.state.tokens;
       this.set({ tokens: { input: tk.input + res.usage.input, output: tk.output + res.usage.output } });
+      usage.record(this.id, taskId, res.usage);
       messages.push(res.message);
       if (res.message.content?.trim()) bus.log('debug', `💬 ${res.message.content.trim().slice(0, 300)}`, this.id, taskId);
 
@@ -198,13 +244,23 @@ export class AgentRunner {
       let ended = false;
       for (const call of calls) {
         const r = await this.execTool(call, ctx);
-        messages.push({ role: 'tool', tool_call_id: call.id, content: r.output.length > TOOL_OUTPUT_LIMIT ? r.output.slice(0, TOOL_OUTPUT_LIMIT) + '\n...[输出截断]' : r.output });
+        let out = r.output.length > TOOL_OUTPUT_LIMIT ? r.output.slice(0, TOOL_OUTPUT_LIMIT) + '\n...[输出截断]' : r.output;
+        if (call.function.name === 'write_file' || call.function.name === 'edit_file') {
+          fileEdits++;
+          if (isLightRole && fileEdits >= 2) {
+            out += '\n\n【系统提示】你已完成文稿写入与修改，请勿再反复微调字数或格式，下一步请立即调用 submit_for_review 提交！';
+          }
+        }
+        messages.push({ role: 'tool', tool_call_id: call.id, content: out });
         if (r.end) ended = true;
+      }
+      if (isLightRole && step === maxSteps - 2 && !ended) {
+        messages.push({ role: 'user', content: '【系统提示】即将达到步数上限，请立即调用 submit_for_review 提交当前产出。' });
       }
       save();
       if (ended) return 'done';
     }
-    bus.log('warn', `超过最大步数 ${config.llm.maxSteps}`, this.id, taskId);
+    bus.log('warn', `超过最大步数 ${maxSteps}`, this.id, taskId);
     return 'done';
   }
 
@@ -222,9 +278,11 @@ export class AgentRunner {
 
     // ---- 风险审批 ----
     const { risk, reason } = classifyRisk(name, args);
-    const needApproval = risk === 'R2' || (risk === 'R1' && !this.isManager);
-    if (needApproval) {
-      const approver = risk === 'R2' ? 'human' : 'manager';
+    // 谁来批由「公司规则」决定；经理自己的 R1 操作可自批，R2 不能自批（交给老板）
+    const rule = settings.get().approval;
+    let approver = risk === 'R2' ? rule.r2 : risk === 'R1' ? rule.r1 : 'auto';
+    if (approver === 'manager' && this.isManager) approver = risk === 'R2' ? 'human' : 'auto';
+    if (approver !== 'auto') {
       const a = store.createApproval({
         kind: 'tool',
         taskId: ctx.taskId,

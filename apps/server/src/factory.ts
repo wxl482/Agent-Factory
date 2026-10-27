@@ -5,9 +5,12 @@ import { company } from './company.js';
 import type { LLM } from './llm/types.js';
 import { store } from './store.js';
 import { closeAllBrowsers } from './tools/browser.js';
+import { registerCustomTools } from './tools/index.js';
 import { clearScreens } from './tools/screens.js';
 import { killAllTerminals } from './tools/terminal.js';
 import * as wf from './workflow.js';
+import { DESK, life } from './life.js';
+import { usage } from './usage.js';
 
 /** 公司：持有所有员工，负责调度 */
 class Factory {
@@ -18,6 +21,7 @@ class Factory {
   init(llm: LLM, profileId: string) {
     this.llm = llm;
     company.load(profileId);
+    registerCustomTools(company.profile.customTools);
     for (const def of company.profile.agents) {
       const prev = store.agents.get(def.id);
       store.agents.set(def.id, {
@@ -30,22 +34,32 @@ class Factory {
         currentTaskId: null,
         activity: '空闲',
         tokens: prev?.tokens ?? { input: 0, output: 0 },
+        location: DESK,
+        speech: null,
       });
       this.runners.set(def.id, new AgentRunner(def, llm));
     }
     this.rebuildJobs();
     store.onChange(() => this.schedule());
+    life.start();
     bus.log('info', `公司「${company.profile.name}」开张，${company.profile.agents.length} 名员工就位`);
     this.schedule();
   }
 
-  /** 重启后根据任务状态补回经理的待办事项 */
+  /** 重启后恢复持久化的待办队列，并根据任务状态自愈对账 */
   private rebuildJobs() {
+    if (store.restoredJobs.length) {
+      wf.restoreJobs(store.restoredJobs);
+      store.restoredJobs = [];
+    }
     for (const t of store.tasks.values()) {
       if (t.status === 'review') wf.submitForReview(t, t.assigneeAgentId ?? '?', t.result);
       if (t.status === 'blocked') wf.reportBlocked(t, t.assigneeAgentId ?? '?', t.result);
       if (t.kind === 'goal' && t.status === 'planning' && store.children(t.id).length === 0) {
         wf.enqueueJob({ priority: t.priority, taskId: t.id, title: `规划目标 ${t.id}`, prompt: `请规划目标 ${t.id}：${t.title}\n${t.description}\n用 create_subtask 拆解派发。` });
+      }
+      if (t.kind === 'goal' && t.status === 'in_progress') {
+        wf.checkGoal(t.id);
       }
     }
   }
@@ -75,9 +89,15 @@ class Factory {
           (t.status === 'todo' || t.status === 'changes_requested') &&
           t.assigneeRoleId === r.role.id &&
           (!t.assigneeAgentId || t.assigneeAgentId === r.id) &&
+          !usage.isGoalHeld(t.id) &&
           this.ready(t),
       )
       .sort((a, b) => PRIORITY_ORDER[a.priority] - PRIORITY_ORDER[b.priority] || Number(b.assigneeAgentId === r.id) - Number(a.assigneeAgentId === r.id) || a.createdAt - b.createdAt);
+  }
+
+  /** 有没有等着这个员工做的事（事项或可领取的任务） */
+  hasWork(r: AgentRunner) {
+    return !!wf.peekJob(r.id) || (!r.isManager && this.candidates(r).length > 0);
   }
 
   schedule() {
@@ -86,7 +106,7 @@ class Factory {
     try {
       if (store.globalPaused) return;
       for (const r of this.runners.values()) {
-        if (r.busy || r.state.paused) continue;
+        if (r.busy || r.state.paused || life.isAway(r.id)) continue;
         const job = wf.takeJob(r.id);
         if (job) {
           void r.runJob(job);
@@ -106,6 +126,8 @@ class Factory {
   private preempt() {
     const waitingP0 = [...store.tasks.values()].filter((t) => t.kind === 'task' && t.priority === 'P0' && (t.status === 'todo' || t.status === 'changes_requested') && this.ready(t));
     for (const t of waitingP0) {
+      // 每个 P0 任务只让一个人让出
+      if ([...this.runners.values()].some((r) => r.preemptFor === t.id)) continue;
       const victim = [...this.runners.values()].find((r) => {
         if (!r.busy || r.interrupt || r.role.id !== t.assigneeRoleId) return false;
         if (t.assigneeAgentId && t.assigneeAgentId !== r.id) return false;
@@ -114,6 +136,7 @@ class Factory {
       });
       if (victim) {
         victim.interrupt = true;
+        victim.preemptFor = t.id;
         bus.log('warn', `P0 任务 ${t.id} 到达，通知 ${victim.def.name} 让出当前工作`, victim.id, t.id);
       }
     }

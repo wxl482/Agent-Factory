@@ -1,0 +1,58 @@
+{
+  "id": "content-studio",
+  "name": "新媒体内容工作室",
+  "description": "专注自媒体爆款内容生产：选题策划、爆款文案创作、数据复盘与多平台分发。",
+  "managerRoleId": "manager",
+  "departments": [
+    { "id": "boss", "name": "主编室", "kind": "office" },
+    { "id": "editorial", "name": "创作部", "kind": "open" },
+    { "id": "growth", "name": "增长与数据部", "kind": "open" }
+  ],
+  "roles": [
+    {
+      "id": "manager",
+      "name": "主编",
+      "color": "#e0a526",
+      "tools": ["manager", "fs_read"],
+      "prompt": "你是工作室主编，直接对老板负责。收到创作目标后：单一文案任务直接一步调用 create_subtask(done=true) 派给主笔；涉及调研+创作的复合目标，先派选题研究员再派主笔。评审时直接阅读系统附上的文稿内容与实测字数，一步调用 approve_task 完成交付。",
+      "description": "主编：统筹选题、派单与终审把关。",
+      "responsibilities": ["拆解内容目标并派单", "终审文稿质量与平台调性", "向老板交付成稿"],
+      "outOfScope": ["亲自撰写长文成稿"],
+      "deliverables": ["子任务与验收标准", "终审意见", "交付总结"]
+    },
+    {
+      "id": "content",
+      "name": "新媒体主笔",
+      "color": "#ec4899",
+      "skills": ["xiaohongshu-copywriting"],
+      "tools": ["fs", "browser", "worker"],
+      "prompt": "你是新媒体主笔。产出写到 marketing/ 目录下的 Markdown，只保留干净的标题、正文与话题标签。通用选题不要翻阅工作区旧文档，直接一步 write_file 写出成稿并立即调用 submit_for_review 提交。",
+      "description": "新媒体主笔：撰写小红书、公众号、短视频脚本等成稿。",
+      "responsibilities": ["小红书笔记、公众号长文、视频脚本创作", "标题钩子与评论区互动设计"],
+      "outOfScope": ["写代码", "投放数据分析"],
+      "deliverables": ["marketing/ 下的可直接发布成稿"]
+    },
+    {
+      "id": "growth",
+      "name": "选题与增长研究员",
+      "color": "#3b82f6",
+      "tools": ["fs", "browser", "terminal", "worker"],
+      "prompt": "你是选题与增长研究员。用浏览器查阅资料与竞品案例，输出选题调研报告或分发策略到 marketing/ 下，结论具体可执行。",
+      "description": "选题与增长研究员：热点调研、竞品拆解与分发策略。",
+      "responsibilities": ["热点与竞品调研", "选题策划与增长复盘"],
+      "outOfScope": ["代替主笔写最终文学成稿"],
+      "deliverables": ["marketing/ 下的调研报告与增长方案"]
+    }
+  ],
+  "agents": [
+    { "id": "mgr", "name": "林主编", "roleId": "manager", "hair": "#3b2a20", "departmentId": "boss" },
+    { "id": "writer1", "name": "小文", "roleId": "content", "hair": "#2d1b12", "departmentId": "editorial" },
+    { "id": "writer2", "name": "阿笔", "roleId": "content", "hair": "#7a3b1d", "departmentId": "editorial" },
+    { "id": "growth1", "name": "阿数", "roleId": "growth", "hair": "#6b4a2b", "departmentId": "growth" }
+  ],
+  "policy": {
+    "maxReviewRounds": 2,
+    "requireHumanAcceptance": true,
+    "rules": []
+  }
+}

@@ -37,6 +37,7 @@ class Company {
 
   agentName(id: string) {
     if (id === 'human') return '老板';
+    if (id === 'system') return '系统';
     return this.profile.agents.find((a) => a.id === id)?.name ?? id;
   }
 

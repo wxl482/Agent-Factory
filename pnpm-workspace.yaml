@@ -1,6 +1,6 @@
 packages:
   - packages/*
   - apps/*
-onlyBuiltDependencies:
-  - node-pty
-  - esbuild
+allowBuilds:
+  esbuild: true
+  node-pty: true

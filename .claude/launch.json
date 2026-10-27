@@ -1,0 +1,35 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "web",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": [
+        "--filter",
+        "@af/web",
+        "dev"
+      ],
+      "env": {
+        "SERVER_PORT": "8790"
+      },
+      "port": 5173
+    },
+    {
+      "name": "web-test",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": [
+        "--filter",
+        "@af/web",
+        "exec",
+        "vite",
+        "--port",
+        "5174",
+        "--strictPort"
+      ],
+      "env": {
+        "SERVER_PORT": "8790"
+      },
+      "port": 5174
+    }
+  ]
+}

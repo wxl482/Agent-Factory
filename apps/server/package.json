@@ -12,14 +12,17 @@
     "@fastify/cors": "^11.3.1",
     "@fastify/static": "^10.1.7",
     "@fastify/websocket": "^11.3.4",
+    "dingtalk-stream": "2.1.6-beta.1",
     "dotenv": "^18.0.9",
     "fastify": "^5.12.7",
     "nanoid": "^6.0.2",
     "node-pty": "^1.1.0",
     "openai": "^7.43.0",
+    "pg": "^8.23.1",
     "playwright": "^1.64.1"
   },
   "devDependencies": {
+    "@types/pg": "^8.23.1",
     "@types/ws": "^8.18.2",
     "tsx": "^4.23.15"
   }

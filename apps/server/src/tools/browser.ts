@@ -21,9 +21,14 @@ class AgentBrowser {
   page!: Page;
   private cdp!: CDPSession;
   private ready: Promise<void>;
+  lastUsedAt = Date.now();
 
   constructor(readonly agentId: string) {
     this.ready = this.init();
+  }
+
+  touch() {
+    this.lastUsedAt = Date.now();
   }
 
   private async init() {
@@ -129,6 +134,18 @@ class AgentBrowser {
 }
 
 const browsers = new Map<string, AgentBrowser>();
+const IDLE_BROWSER_MS = 180_000;
+
+// 定期回收超过 3 分钟未使用的浏览器 Context，释放内存与 CDP 推流开销（保留最后一帧画面）
+setInterval(() => {
+  const now = Date.now();
+  for (const [id, b] of browsers) {
+    if (now - b.lastUsedAt > IDLE_BROWSER_MS) {
+      browsers.delete(id);
+      b.close().catch(() => {});
+    }
+  }
+}, 60_000).unref();
 
 export function getBrowserFor(agentId: string) {
   let b = browsers.get(agentId);
@@ -136,6 +153,7 @@ export function getBrowserFor(agentId: string) {
     b = new AgentBrowser(agentId);
     browsers.set(agentId, b);
   }
+  b.touch();
   return b;
 }
 

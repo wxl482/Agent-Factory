@@ -6,8 +6,9 @@
   "scripts": {
     "dev": "concurrently -n server,web -c yellow,cyan \"pnpm --filter @af/server dev\" \"pnpm --filter @af/web dev\"",
     "build": "pnpm --filter @af/web build",
-    "start": "pnpm --filter @af/server start",
-    "typecheck": "pnpm -r typecheck"
+    "start": "pnpm build && pnpm --filter @af/server start",
+    "typecheck": "pnpm -r typecheck",
+    "postinstall": "node scripts/fix-node-pty.mjs"
   },
   "pnpm": {
     "onlyBuiltDependencies": [

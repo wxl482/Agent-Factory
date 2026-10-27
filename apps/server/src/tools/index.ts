@@ -9,25 +9,11 @@ import type { ToolSpec } from '../llm/types.js';
 import { getBrowserFor } from './browser.js';
 import { emitEditor } from './screens.js';
 import { getTerminal } from './terminal.js';
+import { life } from '../life.js';
+import { classifyRisk, getTool, registerBuiltinTools, registerCustomTools, registerTool, toolsForRole, type ToolContext, type ToolDef, type ToolResult } from './registry.js';
 
-export interface ToolContext {
-  agentId: string;
-  agentName: string;
-  taskId: string | null;
-  setScreen(mode: ScreenMode, activity: string): void;
-}
-
-export interface ToolResult {
-  output: string;
-  /** 结束当前工作单元 */
-  end?: boolean;
-}
-
-interface ToolDef {
-  group: ToolGroup[];
-  spec: ToolSpec;
-  run(ctx: ToolContext, args: any): Promise<ToolResult | string>;
-}
+export type { ToolContext, ToolDef, ToolResult };
+export { classifyRisk, getTool, registerCustomTools, registerTool, toolsForRole };
 
 const obj = (properties: Record<string, unknown>, required: string[] = []) => ({ type: 'object', properties, required });
 const str = (description: string) => ({ type: 'string', description });
@@ -43,7 +29,15 @@ function rel(abs: string) {
   return path.relative(config.workspace, abs) || '.';
 }
 
-const IGNORE = new Set(['node_modules', '.git', 'dist', '.next', '__pycache__', '.venv']);
+const IGNORE = new Set(['node_modules', '.git', 'dist', '.next', '__pycache__', '.venv', '.tmp', '.tmp-verify']);
+
+/** 统计文本行数、去空白字符数（按码位）和汉字数，避免模型为了数清字数反复写脚本或做网页 */
+export function textStats(content: string) {
+  const lines = content.split('\n').length;
+  const noWs = [...content.replace(/\s+/g, '')].length;
+  const hanzi = (content.match(/[\u4e00-\u9fa5]/g) ?? []).length;
+  return `${lines} 行，去空白 ${noWs} 字符 / ${hanzi} 汉字`;
+}
 
 function listTree(dir: string, depth: number, prefix = '', out: string[] = []) {
   if (out.length > 300) return out;
@@ -101,13 +95,17 @@ const TOOLS: Record<string, ToolDef> = {
   },
   write_file: {
     group: ['fs'],
-    spec: { name: 'write_file', description: '创建或覆盖文件（自动创建目录）', parameters: obj({ path: str('相对工作区的文件路径'), content: str('完整文件内容') }, ['path', 'content']) },
+    spec: { name: 'write_file', description: '创建或覆盖文件（自动创建目录，并返回精确字数统计）', parameters: obj({ path: str('相对工作区的文件路径'), content: str('完整文件内容') }, ['path', 'content']) },
     async run(ctx, a) {
       const abs = inWorkspace(a.path);
+      const rPath = rel(abs);
       fs.mkdirSync(path.dirname(abs), { recursive: true });
       fs.writeFileSync(abs, a.content);
-      emitEditor(ctx.agentId, { path: rel(abs), content: a.content, done: true });
-      return `已写入 ${rel(abs)}（${a.content.split('\n').length} 行）`;
+      store.addArtifact(ctx.taskId, rPath);
+      emitEditor(ctx.agentId, { path: rPath, content: a.content, done: true });
+      const isDoc = /\.(md|txt)$/i.test(rPath);
+      const tip = isDoc ? '。若内容完整，请直接调用 submit_for_review 提交，不要为凑精确字数反复修改或编写计数工具' : '';
+      return `已写入 ${rPath}（${textStats(a.content)}）${tip}`;
     },
   },
   edit_file: {
@@ -119,14 +117,16 @@ const TOOLS: Record<string, ToolDef> = {
     },
     async run(ctx, a) {
       const abs = inWorkspace(a.path);
-      ctx.setScreen('editor', `修改 ${rel(abs)}`);
+      const rPath = rel(abs);
+      ctx.setScreen('editor', `修改 ${rPath}`);
       const src = fs.readFileSync(abs, 'utf8');
       const n = src.split(a.old_string).length - 1;
       if (n !== 1) throw new Error(`old_string 在文件中出现了 ${n} 次，需要唯一匹配`);
       const next = src.replace(a.old_string, () => a.new_string);
       fs.writeFileSync(abs, next);
-      emitEditor(ctx.agentId, { path: rel(abs), content: next, done: true });
-      return `已修改 ${rel(abs)}`;
+      store.addArtifact(ctx.taskId, rPath);
+      emitEditor(ctx.agentId, { path: rPath, content: next, done: true });
+      return `已修改 ${rPath}（当前 ${textStats(next)}）`;
     },
   },
 
@@ -163,6 +163,12 @@ const TOOLS: Record<string, ToolDef> = {
     group: ['browser'],
     spec: { name: 'browser_open', description: '在你的浏览器打开网址，或工作区内的 html 文件路径', parameters: obj({ url: str('网址或工作区内文件路径') }, ['url']) },
     async run(ctx, a) {
+      const ag = company.profile.agents.find((x) => x.id === ctx.agentId);
+      const role = ag ? company.role(ag.roleId) : undefined;
+      const isExternal = /^https?:\/\//i.test(a.url) || (/^[\w-]+(\.[\w-]+)+(:\d+)?(\/|$)/.test(a.url) && !a.url.endsWith('.html'));
+      if (role && !role.tools.includes('terminal') && !isExternal) {
+        return '提示：你的岗位浏览器仅用于访问外部网站查阅资料，无需打开本地 HTML 验证或统计字数（write_file / edit_file 已自动返回精确字数）。若文稿已完成，请直接调用 submit_for_review 提交。';
+      }
       ctx.setScreen('browser', `打开 ${a.url}`);
       return getBrowserFor(ctx.agentId).open(a.url);
     },
@@ -211,9 +217,19 @@ const TOOLS: Record<string, ToolDef> = {
   // ---------------- 员工 ----------------
   submit_for_review: {
     group: ['worker'],
-    spec: { name: 'submit_for_review', description: '完成任务后提交给经理评审', parameters: obj({ summary: str('工作总结：做了什么、产出文件、如何验证') }, ['summary']) },
+    spec: {
+      name: 'submit_for_review',
+      description: '完成任务后提交给经理评审',
+      parameters: obj(
+        {
+          summary: str('工作总结：做了什么、产出文件路径、如何验证的'),
+          self_check: str('对照验收标准逐条自查：每条写明 ✅/❌ 和依据'),
+        },
+        ['summary', 'self_check'],
+      ),
+    },
     async run(ctx, a) {
-      wf.submitForReview(currentTask(ctx), ctx.agentId, a.summary);
+      wf.submitForReview(currentTask(ctx), ctx.agentId, a.summary, a.self_check ?? '');
       return { output: '已提交评审', end: true };
     },
   },
@@ -223,6 +239,43 @@ const TOOLS: Record<string, ToolDef> = {
     async run(ctx, a) {
       wf.reportBlocked(currentTask(ctx), ctx.agentId, a.reason);
       return { output: '已上报', end: true };
+    },
+  },
+  reject_assignment: {
+    group: ['worker'],
+    spec: {
+      name: 'reject_assignment',
+      description: '任务不属于你的岗位职责时，退回给经理改派（对照岗位职责表判断）',
+      parameters: obj({ reason: str('为什么不属于你的岗位'), suggested_role: str('应该由哪个角色负责（角色 id）') }, ['reason']),
+    },
+    async run(ctx, a) {
+      wf.rejectAssignment(currentTask(ctx), ctx.agentId, a.reason, a.suggested_role);
+      return { output: '已退回经理', end: true };
+    },
+  },
+  ask_manager: {
+    group: ['worker'],
+    spec: {
+      name: 'ask_manager',
+      description: '走到经理室当面请示经理（需求不清、需要决策、遇到取舍时用），会得到经理的答复',
+      parameters: obj({ question: str('要请示的问题，带上必要背景') }, ['question']),
+    },
+    async run(ctx, a) {
+      const answer = await life.consult(ctx.agentId, company.managerAgentId(), a.question);
+      return `经理答复：${answer}`;
+    },
+  },
+  ask_colleague: {
+    group: ['worker'],
+    spec: {
+      name: 'ask_colleague',
+      description: '走到某位同事工位当面请教（需要对方岗位的信息或意见时用）',
+      parameters: obj({ agent_id: str('同事的员工 id'), question: str('要问的问题，带上必要背景') }, ['agent_id', 'question']),
+    },
+    async run(ctx, a) {
+      if (!company.profile.agents.some((x) => x.id === a.agent_id) || a.agent_id === ctx.agentId) throw new Error('同事 id 无效');
+      const answer = await life.consult(ctx.agentId, a.agent_id, a.question);
+      return `${company.agentName(a.agent_id)} 的答复：${answer}`;
     },
   },
 
@@ -235,13 +288,17 @@ const TOOLS: Record<string, ToolDef> = {
       parameters: obj(
         {
           title: str('任务标题'),
-          description: str('详细描述，包括验收标准'),
-          role: str('负责角色 id'),
+          description: str('背景、要做什么、产出物路径'),
+          role: str('负责角色 id（对照岗位职责表，按产出物归属选择）'),
+          acceptance: str('验收标准：2~4 条可检查的核心条目'),
           priority: { type: 'string', enum: ['P0', 'P1', 'P2', 'P3'], description: '默认继承目标优先级' },
           depends_on: { type: 'array', items: { type: 'string' }, description: '依赖的任务 id，完成后才开始' },
           goal_id: str('目标 id，默认当前目标'),
+          done: { type: 'boolean', description: '若这是本次规划要派发的唯一或最后一个子任务，设为 true 可直接结束本次规划' },
+          force: { type: 'boolean', description: '派单校验拦截后仍坚持原派法时设为 true' },
+          force_reason: str('坚持原派法的理由'),
         },
-        ['title', 'description', 'role'],
+        ['title', 'description', 'role', 'acceptance'],
       ),
     },
     async run(ctx, a) {
@@ -249,8 +306,52 @@ const TOOLS: Record<string, ToolDef> = {
       const t = goalId ? store.tasks.get(goalId) : undefined;
       if (t?.kind === 'task') goalId = t.parentId;
       if (!goalId) throw new Error('请提供 goal_id');
-      const sub = wf.createSubtask(goalId, a);
-      return `已创建 ${sub.id}`;
+      const sub = await wf.createSubtask(goalId, a);
+      return { output: `已创建 ${sub.id}，派给${company.roleName(sub.assigneeRoleId!)}`, end: Boolean(a.done) };
+    },
+  },
+  reassign_task: {
+    group: ['manager'],
+    spec: {
+      name: 'reassign_task',
+      description: '把任务改派给另一个角色（例如员工退单且理由成立）',
+      parameters: obj({ task_id: str('任务 id'), role: str('新的负责角色 id'), note: str('给新负责人的说明') }, ['task_id', 'role']),
+    },
+    async run(ctx, a) {
+      wf.reassignTask(taskById(a.task_id), a.role, a.note ?? '', ctx.agentId);
+      return { output: '已改派', end: true };
+    },
+  },
+  call_meeting: {
+    group: ['manager'],
+    spec: {
+      name: 'call_meeting',
+      description: '召集同事到会议室开会（跨岗位目标的启动对齐、需求有歧义、方案取舍时用；简单任务不要开会）。会议结束后返回纪要，纪要会附在目标上',
+      parameters: obj(
+        {
+          topic: str('会议主题'),
+          agenda: str('议程：要讨论和决定的问题'),
+          participants: { type: 'array', items: { type: 'string' }, description: '参会员工 id（2~4 人，只叫相关岗位）' },
+          rounds: int('发言轮数，默认 1，最多 3'),
+        },
+        ['topic', 'agenda', 'participants'],
+      ),
+    },
+    async run(ctx, a) {
+      ctx.setScreen('idle', `主持会议：${a.topic}`);
+      return life.meeting(ctx.agentId, { topic: a.topic, agenda: a.agenda, participants: a.participants ?? [], taskId: ctx.taskId, rounds: a.rounds });
+    },
+  },
+  talk_to: {
+    group: ['manager'],
+    spec: {
+      name: 'talk_to',
+      description: '把某位员工叫到经理室当面谈话（强调要求、纠正方向、了解进展），对方的回应会返回给你',
+      parameters: obj({ agent_id: str('员工 id'), message: str('要对他说的话') }, ['agent_id', 'message']),
+    },
+    async run(ctx, a) {
+      if (!company.profile.agents.some((x) => x.id === a.agent_id) || a.agent_id === ctx.agentId) throw new Error('员工 id 无效');
+      return life.talk(ctx.agentId, a.agent_id, a.message);
     },
   },
   list_tasks: {
@@ -263,9 +364,13 @@ const TOOLS: Record<string, ToolDef> = {
   },
   approve_task: {
     group: ['manager'],
-    spec: { name: 'approve_task', description: '评审通过任务', parameters: obj({ task_id: str('任务 id'), comment: str('评语') }, ['task_id']) },
+    spec: {
+      name: 'approve_task',
+      description: '评审通过任务（若这是目标的唯一或最后一个子任务，将自动完成目标交付）',
+      parameters: obj({ task_id: str('任务 id'), comment: str('评语'), goal_summary: str('可选：若目标所有子任务均已完成，可直接填写给老板的交付总结（产出位置、核心内容）') }, ['task_id']),
+    },
     async run(ctx, a) {
-      wf.approveTask(taskById(a.task_id), a.comment ?? '', ctx.agentId);
+      wf.approveTask(taskById(a.task_id), a.comment ?? '', ctx.agentId, a.goal_summary);
       return { output: '已通过', end: true };
     },
   },
@@ -327,26 +432,6 @@ const TOOLS: Record<string, ToolDef> = {
   },
 };
 
-export function toolsForRole(groups: ToolGroup[]): ToolSpec[] {
-  return Object.values(TOOLS)
-    .filter((t) => t.group.some((g) => groups.includes(g)))
-    .map((t) => t.spec);
-}
-
-export function getTool(name: string) {
-  return TOOLS[name];
-}
-
-/** 按公司风险规则判定工具调用的风险等级 */
-export function classifyRisk(tool: string, args: any): { risk: Risk; reason: string } {
-  const subject = tool === 'run_command' ? String(args?.command ?? '') : JSON.stringify(args ?? {});
-  let best: { risk: Risk; reason: string } = { risk: 'R0', reason: '' };
-  for (const r of company.profile.policy.rules) {
-    if (r.tool !== tool && r.tool !== '*') continue;
-    if (r.pattern && !new RegExp(r.pattern, 'i').test(subject)) continue;
-    if (r.risk > best.risk) best = { risk: r.risk, reason: r.reason };
-  }
-  return best;
-}
+registerBuiltinTools(TOOLS);
 
 export type { Priority };

@@ -25,7 +25,15 @@ export interface StreamCallbacks {
 
 export interface LLMResult {
   message: Extract<ChatMessage, { role: 'assistant' }>;
-  usage: { input: number; output: number };
+  usage: TokenUsage;
+}
+
+/** cacheHit：输入里命中服务端缓存的部分（DeepSeek 等按更低单价计费） */
+export interface TokenUsage {
+  input: number;
+  output: number;
+  cacheHit?: number;
+  model?: string;
 }
 
 export interface LLMContext {
@@ -33,6 +41,20 @@ export interface LLMContext {
   roleId: string;
 }
 
+/** 单轮非流式调用的用途：决定演示模式下返回什么，真实模型下不影响行为 */
+export type CompleteKind = 'route_check' | 'meeting_open' | 'meeting_speak' | 'meeting_summary' | 'consult';
+
+export interface CompleteRequest {
+  kind: CompleteKind;
+  system: string;
+  user: string;
+  /** 要求输出 JSON 对象 */
+  json?: boolean;
+  maxTokens?: number;
+}
+
 export interface LLM {
   chat(messages: ChatMessage[], tools: ToolSpec[], cb: StreamCallbacks, ctx: LLMContext, signal?: AbortSignal): Promise<LLMResult>;
+  /** 单轮补全：派单校验、会议发言、同事答疑等“旁路”调用 */
+  complete(req: CompleteRequest, ctx: LLMContext): Promise<{ text: string; usage: TokenUsage }>;
 }

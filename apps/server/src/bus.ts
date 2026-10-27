@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { LogEntry, LogLevel, ServerMsg } from '@af/shared';
 import { config } from './config.js';
+import { db } from './db.js';
 
 type Listener = (msg: ServerMsg) => void;
 
@@ -42,6 +43,7 @@ class Bus {
     this.logs.push(e);
     if (this.logs.length > 2000) this.logs.splice(0, this.logs.length - 2000);
     this.logFile.write(JSON.stringify(e) + '\n');
+    db.insertEvent(e);
     this.emit({ t: 'log', d: e });
     const tag = agentId ? `[${agentId}]` : '[system]';
     if (level !== 'debug') console.log(`${new Date(e.ts).toLocaleTimeString()} ${level.toUpperCase().padEnd(7)} ${tag} ${text.slice(0, 200)}`);
