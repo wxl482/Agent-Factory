@@ -32,10 +32,6 @@ function initWorkspace() {
   if (!fs.existsSync(kb)) {
     fs.writeFileSync(kb, '# 公司知识库\n\n在这里记录项目规范、技术选型和重要决策，所有员工开工前都会阅读。\n');
   }
-  if (!fs.existsSync(path.join(config.workspace, '.git'))) {
-    const env = { ...process.env, GIT_AUTHOR_NAME: 'factory', GIT_AUTHOR_EMAIL: 'factory@agent-factory.local', GIT_COMMITTER_NAME: 'factory', GIT_COMMITTER_EMAIL: 'factory@agent-factory.local' };
-    execSync('git init -q && git add -A && git commit -q -m "chore: 初始化工作区"', { cwd: config.workspace, env });
-  }
 }
 
 async function createLLM(): Promise<LLM> {

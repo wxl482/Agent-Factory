@@ -184,26 +184,37 @@ export async function createSubtask(
   return t;
 }
 
-/** 自动扫描 git 工作区在任务开始后新增/修改的文件（补齐 run_command 命令行生成的产物） */
+const ARTIFACT_IGNORE_DIRS = new Set(['node_modules', '.git', 'dist', '.next', '__pycache__', '.venv', '.tmp', '.tmp-verify']);
+
+/** 自动扫描工作区在任务开始后新增/修改的文件（无需依赖 Git，补齐 run_command 命令行生成的产物） */
 export function captureWorktreeArtifacts(task: Task) {
-  try {
-    const out = execSync('git status --porcelain -uall', { cwd: config.workspace, encoding: 'utf8', timeout: 3000 });
-    const since = (task.startedAt ?? task.createdAt) - 2000;
-    for (const line of out.split('\n')) {
-      if (line.length < 4) continue;
-      let relPath = line.slice(3).trim();
-      if (relPath.includes(' -> ')) relPath = relPath.split(' -> ').pop()!.trim();
-      relPath = relPath.replace(/^"+|"+$/g, '');
-      if (!relPath || relPath === 'KNOWLEDGE.md' || relPath.startsWith('docs/meetings/')) continue;
-      if (/^(\.tmp|node_modules|\.git|dist|\.next|__pycache__)(\/|-|$)/.test(relPath)) continue;
-      try {
-        const st = fs.statSync(path.join(config.workspace, relPath));
-        if (st.isFile() && st.mtimeMs >= since) {
-          store.addArtifact(task.id, relPath);
-        }
-      } catch {}
+  const since = (task.startedAt ?? task.createdAt) - 1000;
+  const walk = (dir: string, depth: number) => {
+    if (depth > 4) return;
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
     }
-  } catch {}
+    for (const e of entries) {
+      if (e.name.startsWith('.') || ARTIFACT_IGNORE_DIRS.has(e.name)) continue;
+      const abs = path.join(dir, e.name);
+      const relPath = path.relative(config.workspace, abs);
+      if (!relPath || relPath === 'KNOWLEDGE.md' || relPath.startsWith('docs/meetings/')) continue;
+      if (e.isDirectory()) {
+        walk(abs, depth + 1);
+      } else if (e.isFile()) {
+        try {
+          const st = fs.statSync(abs);
+          if (st.mtimeMs >= since) {
+            store.addArtifact(task.id, relPath);
+          }
+        } catch {}
+      }
+    }
+  };
+  walk(config.workspace, 0);
 }
 
 /** 读取文本类产出物的预览和系统实测字数，直接附在评审提示词里，省去经理再调工具读文件/跑脚本 */

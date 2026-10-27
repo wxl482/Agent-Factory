@@ -57,6 +57,7 @@ class AgentTerminal {
         CI: '1',
         GIT_PAGER: 'cat',
         PAGER: 'cat',
+        GIT_CEILING_DIRECTORIES: config.workspace,
         BASH_SILENCE_DEPRECATION_WARNING: '1',
         GIT_AUTHOR_NAME: name,
         GIT_AUTHOR_EMAIL: `${agentId}@agent-factory.local`,
