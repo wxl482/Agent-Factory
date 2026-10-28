@@ -26,7 +26,17 @@ export function resolveModel(ctx?: LLMContext): string {
 
 /** OpenAI 兼容协议客户端（支持按角色多模型路由、首包/流式超时熔断、备用模型自动切换） */
 export class OpenAICompatLLM implements LLM {
-  private client = new OpenAI({ apiKey: config.llm.apiKey, baseURL: config.llm.baseURL });
+  private client: OpenAI;
+
+  /** 不传则用当前全局配置；传入时用于「测试连接」，不影响正在使用的模型 */
+  constructor(opts?: { apiKey: string; baseURL: string }) {
+    this.client = new OpenAI({ apiKey: opts?.apiKey ?? config.llm.apiKey, baseURL: opts?.baseURL ?? config.llm.baseURL, maxRetries: opts ? 0 : 2 });
+  }
+
+  /** 用 1 个 token 的请求验证 Key、地址和模型名是否可用 */
+  async ping(model: string) {
+    await this.client.chat.completions.create({ model, messages: [{ role: 'user', content: 'ping' }], max_tokens: 1 }, { timeout: 20_000 });
+  }
 
   async listModels(): Promise<string[]> {
     const res = await this.client.models.list();

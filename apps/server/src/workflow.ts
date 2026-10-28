@@ -96,14 +96,25 @@ export function addGoalNote(goalId: string | null, note: string) {
 
 // ---------------- 流转 ----------------
 
-export function createGoal(title: string, description: string, priority: Priority) {
+export function createGoal(title: string, description: string, priority: Priority, opts: { clarify?: boolean } = {}) {
   const g = store.createTask({ kind: 'goal', title, description, priority, createdBy: 'human', status: 'planning' });
-  bus.log('info', `老板下达新目标 ${g.id}：${title}`, null, g.id);
+  if (opts.clarify) store.updateTask(g.id, { clarify: true });
+  bus.log('info', `老板下达新目标 ${g.id}：${title}${opts.clarify ? '（要求先确认需求）' : ''}`, null, g.id);
   enqueuePlan(g);
   return g;
 }
 
 function enqueuePlan(goal: Task) {
+  // 老板要求先问清楚：第一次规划只提问，拿到答复后（onApprovalDecided 会再派一个事项）再派活
+  if (goal.clarify && !goal.notes.some((n) => n.startsWith('【需求确认】'))) {
+    enqueueJob({
+      priority: goal.priority,
+      taskId: goal.id,
+      title: `确认需求 ${goal.id}`,
+      prompt: `${goalContext(goal)}\n\n老板要求**先把需求问清楚再开工**。请判断还缺哪些会明显影响交付结果的关键信息（例如目标受众、风格调性、篇幅/范围、必须包含的内容、交付形式、截止时间），然后调用一次 escalate_to_human：\n- question 里用 1~3 个编号问题一次问完，每个问题一句话，不要寒暄；\n- options 给出 2~4 个最常见的组合选项，方便老板一键选择（老板也可以在备注里自由回答）。\n如果需求已经足够清楚，直接说明「需求已清楚」并按标准步骤用 create_subtask 派活。`,
+    });
+    return;
+  }
   enqueueJob({
     priority: goal.priority,
     taskId: goal.id,
@@ -443,6 +454,11 @@ export function onApprovalDecided(a: Approval) {
       // 返工超限的裁决
       if (a.status === 'approved') approveTask(task, `老板裁决通过 ${a.comment ?? ''}`, 'human');
       else store.updateTask(task.id, { status: 'changes_requested', feedback: `老板指导：${a.comment || '请继续完善'}`, reviewRounds: 0 });
+    } else if (task && task.kind === 'goal' && task.clarify && task.status === 'planning' && store.children(task.id).length === 0) {
+      // 「先问清楚」的答复：记进目标备注（之后所有环节都能看到），然后按标准步骤规划
+      const answer = a.comment?.trim() || (a.status === 'approved' ? '按你建议的方案推进' : '老板没有补充，按你对目标的理解推进');
+      addGoalNote(task.id, `【需求确认】\n问：${a.detail}\n答：${answer}`);
+      enqueuePlan(store.tasks.get(task.id)!);
     } else {
       enqueueJob({
         priority: task?.priority ?? 'P1',

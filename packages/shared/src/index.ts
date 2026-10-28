@@ -81,11 +81,23 @@ export interface AvatarModelConfig {
   clips?: Partial<Record<AvatarAction, string>>;
 }
 
+/** 下达目标的模板：新手不知道怎么写目标时一键填好结构，【】里是需要改成自己内容的地方 */
+export interface GoalTemplate {
+  icon: string;
+  /** 卡片上显示的短名，例如「小红书文案」 */
+  label: string;
+  title: string;
+  description: string;
+  priority?: Priority;
+}
+
 export interface CompanyProfile {
   id: string;
   name: string;
   description: string;
   managerRoleId: string;
+  /** 下达目标的模板，显示在新手引导和「下达目标」弹窗里 */
+  goalTemplates?: GoalTemplate[];
   /** 部门（每个部门是办公室里的一个房间）；不配置则所有人在同一个办公区 */
   departments?: DepartmentDef[];
   roles: RoleDef[];
@@ -187,6 +199,8 @@ export interface Task {
   acceptance: string;
   /** 会议纪要等协作记录（目标上） */
   notes: string[];
+  /** 老板要求先问清楚需求再开工（目标上） */
+  clarify?: boolean;
   /** 这个任务写过/改过的工作区文件（相对路径），交付页据此列出产出 */
   artifacts: string[];
   /** 首次开工、完成（done/cancelled）的时间，用于统计耗时 */
@@ -339,12 +353,21 @@ export interface ImStatus {
   dingtalk: { state: 'off' | 'connecting' | 'online' | 'error'; detail?: string };
 }
 
+/** 当前模型配置（发给前端；永远不包含完整的 API Key） */
+export interface LlmInfo {
+  provider: 'openai' | 'mock' | string;
+  model: string;
+  baseURL?: string;
+  /** 已保存的 Key 的掩码提示，例如 sk-…a1b2；空 = 未配置 */
+  keyHint?: string;
+}
+
 // ============ WebSocket 协议（服务端 → 前端） ============
 
 export interface Snapshot {
   profile: CompanyProfile;
   profiles: { id: string; name: string }[];
-  llm: { provider: string; model: string };
+  llm: LlmInfo;
   agents: AgentState[];
   tasks: Task[];
   approvals: Approval[];
@@ -377,7 +400,8 @@ export type ServerMsg =
   | { t: 'paused'; d: boolean }
   | { t: 'usage'; d: UsageStats }
   | { t: 'settings'; d: Settings }
-  | { t: 'im'; d: ImStatus };
+  | { t: 'im'; d: ImStatus }
+  | { t: 'llm'; d: LlmInfo };
 
 export const TERM_COLS = 102;
 export const TERM_ROWS = 32;

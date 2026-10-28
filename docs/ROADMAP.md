@@ -47,6 +47,19 @@
   - 多模型路由：支持在 `RoleDef.model` 按岗位指定 `fast` / `strong` 或具体模型名。
   - 多公司模板：新增 `company/profiles/content-studio.json`（新媒体内容工作室），可与软件研发公司一键切换。
 
+## 已完成（2026-10-28，体验与可用性）
+
+- **新手引导**：`apps/web/src/components/Welcome.tsx`。没有任何目标时，任务页显示引导、示例目标和准备清单。
+- **目标模板**：`CompanyProfile.goalTemplates`，前端在 `Panels.tsx` 的 `NewGoalDialog` / `openGoalWith()`。没配置时使用内置的通用模板。
+- **先问清楚再开工**：
+  - 数据：`Task.clarify`。
+  - 流程：`workflow.enqueuePlan` 第一次只派「确认需求」事项，让经理用 `escalate_to_human` 提问。老板答复后在 `onApprovalDecided` 写入【需求确认】备注，再走标准规划。
+- **界面配置模型**：
+  - 后端 `apps/server/src/llm/manager.ts`：`SwitchableLLM` 用于热切换。接口有 `/api/llm/test`、`/api/llm`、`/api/llm/demo`，推送 `ServerMsg { t: 'llm' }`。
+  - 前端 `components/ModelSettings.tsx`。
+- **目标提醒**：`components/GoalNotifier.tsx`，目标进入待验收或完成时弹出提醒。
+- **手机顶栏**：宽度 ≤640px 时，按钮只显示图标，「下达目标」不会被挤出屏幕。
+
 ## 本地验证方法
 
 ```bash

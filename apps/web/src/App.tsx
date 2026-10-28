@@ -8,6 +8,8 @@ import { FocusModal, NewGoalDialog, TopBar } from './components/Panels';
 import { DeliveryDrawer } from './components/Delivery';
 import { CostModal } from './components/CostPanel';
 import { RulesModal } from './components/Rules';
+import { ModelModal } from './components/ModelSettings';
+import { GoalNotifier } from './components/GoalNotifier';
 import { TaskBoard } from './components/TaskBoard';
 
 export function App() {
@@ -113,6 +115,8 @@ export function App() {
       <DeliveryDrawer />
       <CostModal />
       <RulesModal />
+      <ModelModal />
+      <GoalNotifier />
     </div>
   );
 }

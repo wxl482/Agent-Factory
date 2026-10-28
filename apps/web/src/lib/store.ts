@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { AgentState, Approval, CompanyProfile, ImStatus, LogEntry, Meeting, ServerMsg, Settings, Snapshot, Task, UsageStats } from '@af/shared';
+import type { AgentState, Approval, CompanyProfile, GoalTemplate, ImStatus, LogEntry, Meeting, ServerMsg, Settings, Snapshot, Task, UsageStats } from '@af/shared';
 import { cursors, editors, frames, terms, thoughts } from './live';
 
 interface State {
@@ -31,6 +31,9 @@ interface State {
   settings: Settings | null;
   showRules: boolean;
   im: ImStatus | null;
+  showModel: boolean;
+  /** 打开「下达目标」时预填的内容（来自模板） */
+  goalDraft: Pick<GoalTemplate, 'title' | 'description' | 'priority'> | null;
 }
 
 function savedDept() {
@@ -73,6 +76,8 @@ export const useStore = create<State>(() => ({
   settings: null,
   showRules: false,
   im: null,
+  showModel: false,
+  goalDraft: null,
 }));
 
 useStore.subscribe((s, prev) => {
@@ -118,7 +123,8 @@ export function handleMessage(m: ServerMsg) {
         previewBase: d.previewBase,
         settings: d.settings ?? null,
         im: d.im ?? null,
-        ...(pending ? { tab: 'inbox' as const } : {}),
+        // 有待决策就先看待决策；一个目标都没有时显示新手引导（在任务页）
+        ...(pending ? { tab: 'inbox' as const } : !d.tasks.some((t) => t.kind === 'goal') ? { tab: 'tasks' as const } : {}),
       });
       break;
     }
@@ -140,6 +146,9 @@ export function handleMessage(m: ServerMsg) {
       break;
     case 'paused':
       set({ globalPaused: m.d });
+      break;
+    case 'llm':
+      set({ llm: m.d });
       break;
     case 'im':
       set({ im: m.d });

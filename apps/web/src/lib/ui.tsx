@@ -1,6 +1,7 @@
 import { App as AntApp, theme, type ThemeConfig } from 'antd';
 import type { MessageInstance } from 'antd/es/message/interface';
 import type { HookAPI as ModalHookAPI } from 'antd/es/modal/useModal';
+import type { NotificationInstance } from 'antd/es/notification/interface';
 
 /** 统一组件库：Ant Design。主界面用暗色主题，3D 办公室上的悬浮控件用亮色主题 */
 
@@ -65,11 +66,13 @@ export const lightTheme: ThemeConfig = {
 /** 让非组件代码（如 api.ts）也能弹出提示和确认框 */
 export let toast: MessageInstance | null = null;
 export let modal: ModalHookAPI | null = null;
+export let notify: NotificationInstance | null = null;
 
 export function UiBridge() {
   const app = AntApp.useApp();
   toast = app.message;
   modal = app.modal;
+  notify = app.notification;
   return null;
 }
 

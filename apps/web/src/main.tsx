@@ -16,7 +16,7 @@ try {
 createRoot(document.getElementById('root')!).render(
   // 所有弹窗默认垂直居中（含 modal.confirm）
   <ConfigProvider theme={darkTheme} locale={zhCN} button={{ autoInsertSpace: false }} modal={{ centered: true }}>
-    <AntApp className="ant-root">
+    <AntApp className="ant-root" notification={{ top: 64 }}>
       <UiBridge />
       <App />
     </AntApp>

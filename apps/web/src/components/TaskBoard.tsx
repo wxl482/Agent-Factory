@@ -5,6 +5,8 @@ import type { Priority, RoleDef, Task, TaskStatus, UsageStats } from '@af/shared
 import { api } from '../lib/api';
 import { useStore } from '../lib/store';
 import { confirmAction } from '../lib/ui';
+import { goalTemplates, openGoalWith } from './Panels';
+import { Welcome } from './Welcome';
 import { agentColor, agentName, fmtAgo, fmtCost, fmtDuration, NONE, PRIORITY_COLOR, STATUS_CN } from './util';
 
 type View = 'active' | 'done' | 'all';
@@ -45,6 +47,14 @@ export function TaskBoard() {
     (a, b) => Number(finished(a)) - Number(finished(b)) || a.priority.localeCompare(b.priority) || b.createdAt - a.createdAt,
   );
 
+  if (goalsAll.length === 0) {
+    return (
+      <div className="taskboard">
+        <Welcome />
+      </div>
+    );
+  }
+
   return (
     <div className="taskboard">
       <div className="panel-toolbar">
@@ -58,12 +68,22 @@ export function TaskBoard() {
             { value: 'all', label: '全部' },
           ]}
         />
-        <Button type="primary" size="small" icon={<PlusOutlined />} onClick={() => useStore.setState({ showNewGoal: true })}>
+        <Button type="primary" size="small" icon={<PlusOutlined />} onClick={() => openGoalWith()}>
           新目标
         </Button>
       </div>
       {goals.length === 0 && (
-        <Empty className="empty-ant" image={Empty.PRESENTED_IMAGE_SIMPLE} description={view === 'active' ? '没有进行中的目标，点「新目标」给公司派活吧' : '暂无'} />
+        <Empty className="empty-ant" image={Empty.PRESENTED_IMAGE_SIMPLE} description={view === 'active' ? '没有进行中的目标，再给团队派点活？' : '暂无'}>
+          {view === 'active' && (
+            <div className="quick-tpls">
+              {goalTemplates().slice(0, 4).map((t) => (
+                <Button key={t.label} size="small" onClick={() => openGoalWith(t)}>
+                  {t.icon} {t.label}
+                </Button>
+              ))}
+            </div>
+          )}
+        </Empty>
       )}
       <div className="card-list">
         {goals.map((g) => {

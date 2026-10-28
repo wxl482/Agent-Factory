@@ -11,9 +11,7 @@ import { company } from './company.js';
 import { config } from './config.js';
 import { db } from './db.js';
 import { factory } from './factory.js';
-import { MockLLM } from './llm/mock.js';
-import { OpenAICompatLLM } from './llm/openai.js';
-import type { LLM } from './llm/types.js';
+import { llmManager, type LlmForm } from './llm/manager.js';
 import { setLLM } from './llm/index.js';
 import { store } from './store.js';
 import { usage } from './usage.js';
@@ -34,21 +32,6 @@ function initWorkspace() {
   }
 }
 
-async function createLLM(): Promise<LLM> {
-  if (config.llm.provider === 'mock') {
-    bus.log('warn', '未配置 DEEPSEEK_API_KEY，进入演示模式：剧本驱动，但终端、浏览器、文件操作全部真实执行');
-    return new MockLLM();
-  }
-  const llm = new OpenAICompatLLM();
-  try {
-    const models = await llm.listModels();
-    bus.log('info', `模型服务可用模型：${models.join(', ')}；当前使用 ${config.llm.model}`);
-    if (!models.includes(config.llm.model)) bus.log('warn', `LLM_MODEL=${config.llm.model} 不在可用列表中，请检查 .env`);
-  } catch (e: any) {
-    bus.log('warn', `无法获取模型列表：${e?.message ?? e}`);
-  }
-  return llm;
-}
 
 const PREVIEW_BASE = `/preview/${randomBytes(18).toString('base64url')}/`;
 
@@ -56,7 +39,7 @@ function snapshot(): Snapshot {
   return {
     profile: company.profile,
     profiles: company.list(),
-    llm: { provider: config.llm.provider, model: config.llm.provider === 'mock' ? '演示模式' : config.llm.model },
+    llm: llmManager.info(),
     agents: [...store.agents.values()],
     tasks: [...store.tasks.values()],
     approvals: [...store.approvals.values()].filter((a) => a.status === 'pending' || Date.now() - a.createdAt < 86400000),
@@ -82,7 +65,8 @@ async function main() {
   await settings.load();
   notifier.start();
   store.onDecided = wf.onApprovalDecided;
-  const llm = await createLLM();
+  await llmManager.boot();
+  const llm = llmManager.llm;
   setLLM(llm);
 
   const app = Fastify({ bodyLimit: 1024 * 1024 });
@@ -106,10 +90,10 @@ async function main() {
 
   app.get('/api/snapshot', async () => snapshot());
 
-  app.post<{ Body: { title: string; description?: string; priority?: Priority } }>('/api/goals', async (req, reply) => {
-    const { title, description = '', priority = 'P2' } = req.body ?? ({} as any);
+  app.post<{ Body: { title: string; description?: string; priority?: Priority; clarify?: boolean } }>('/api/goals', async (req, reply) => {
+    const { title, description = '', priority = 'P2', clarify = false } = req.body ?? ({} as any);
     if (!title?.trim()) return fail(reply, '标题不能为空');
-    return wf.createGoal(title.trim(), description, priority);
+    return wf.createGoal(title.trim(), description, priority, { clarify: !!clarify });
   });
 
   app.post<{ Params: { id: string }; Body: { reason?: string } }>('/api/tasks/:id/cancel', async (req, reply) => {
@@ -188,6 +172,17 @@ async function main() {
     if (!n) return fail(reply, '没有可批量处理的事项');
     return { ok: true, count: n };
   });
+
+  // 模型设置：测试连接 / 保存并切换 / 切回演示模式（Key 只进不出，前端只拿掩码）
+  app.post<{ Body: LlmForm }>('/api/llm/test', async (req) => llmManager.test(req.body ?? ({} as LlmForm)));
+  app.post<{ Body: LlmForm }>('/api/llm', async (req, reply) => {
+    try {
+      return await llmManager.apply(req.body ?? ({} as LlmForm));
+    } catch (e: any) {
+      return fail(reply, e.message);
+    }
+  });
+  app.post('/api/llm/demo', async () => llmManager.useDemo());
 
   app.post<{ Body: Partial<Budget> }>('/api/budget', async (req) => {
     usage.setBudget(req.body ?? {});
